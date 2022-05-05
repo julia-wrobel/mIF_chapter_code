@@ -1,0 +1,368 @@
+---
+title: "Analysis for book figures"
+author: "Julia Wrobel"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+hitheme: tomorrow
+highlighter: highlight.js
+---
+
+# Overview
+
+This file loads produces Figures and runs analysis using the real data.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(VectraPolarisData)
+library(ggridges)
+library(MASS)
+library(pscl)
+
+knitr::opts_chunk$set(echo = TRUE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 4,
+  fig.path = '../output/'
+)
+
+theme_set(theme_bw() + theme(legend.position = "bottom"))
+
+```
+
+
+# Install and load data
+
+The data is publicly available on Bioconductor as the package `VectraPolarisData`. You can install it here:
+
+```{r, eval = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+     install.packages("BiocManager")
+}
+
+BiocManager::install("VectraPolarisData")
+```
+
+
+## Ovarian data 
+
+Converting the ovarian cancer dataset from a `SpatialExperiment` object to a dataframe.
+
+```{r}
+library(VectraPolarisData)
+spe_ovarian <- HumanOvarianCancerVP()
+
+## Assays slots
+assays_slot <- assays(spe_ovarian)
+intensities_df <- assays_slot$intensities
+rownames(intensities_df) <- paste0("total_", rownames(intensities_df))
+nucleus_intensities_df<- assays_slot$nucleus_intensities
+rownames(nucleus_intensities_df) <- paste0("nucleus_", rownames(nucleus_intensities_df))
+membrane_intensities_df<- assays_slot$membrane_intensities
+rownames(membrane_intensities_df) <- paste0("membrane_", rownames(membrane_intensities_df))
+
+# colData and spatialData
+colData_df <- colData(spe_ovarian)
+spatialCoords_df <- spatialCoords(spe_ovarian)
+
+# clinical data
+patient_level_df <- metadata(spe_ovarian)$clinical_data %>%
+  # create binary stage variable
+  mutate(stage_bin = ifelse(stage %in% c("1", "2"), 0, 1))
+
+cell_level_df <- as.data.frame(cbind(colData_df, 
+                                     spatialCoords_df,
+                                     t(intensities_df),
+                                     t(nucleus_intensities_df),
+                                     t(membrane_intensities_df))
+                               )
+
+
+
+# data frame with clinical characteristics where each row is a different cell
+ovarian_df <- full_join(patient_level_df, cell_level_df, by = "sample_id")
+
+```
+
+
+## Lung data
+
+# Introduction
+# Normalization and phenotyping
+# Compositional analysis
+
+Data is currently in cell-level format (each row is a cell). To make it easier for modeling counts and proportions, going to summarize the dataset so that each row is a subject and cell types are reported as counts. 
+
+Look at only tumor areas.
+
+```{r}
+# aggregate to cell counts for each subject 
+ovarian_counts = cell_level_df %>%
+  group_by(sample_id, tissue_category) %>%
+  summarize(total_cells = n(),
+            cd68_positive_cells = length(phenotype_cd68[phenotype_cd68 == "CD68+"]),
+            ki67_positive_cells = length(phenotype_ki67[phenotype_ki67 == "Ki67+"]),
+            ck_positive_cells = length(phenotype_ck[phenotype_ck == "CK+"]),
+            cd19_positive_cells = length(phenotype_cd19[phenotype_cd19 == "CD19+"]),
+            pstat3_positive_cells = 
+              length(phenotype_p_stat3[phenotype_p_stat3 == "pStat3+"]),
+            cd3_positive_cells = length(phenotype_cd3[phenotype_cd3 == "CD3+"]),
+            cd8_positive_cells = length(phenotype_cd8[phenotype_cd8 == "CD8+"]),
+            cd3plus_cd8plus_cells = length(phenotype_cd8[phenotype_cd8 == "CD8+" &
+                                                           phenotype_cd3 == "CD3+"])
+            ) %>%
+  ungroup()  %>%
+  dplyr::select(sample_id, tissue_category, total_cells, cd68_positive_cells, cd19_positive_cells, cd3_positive_cells,
+         cd8_positive_cells) %>%
+  filter(tissue_category != "Glass") %>%
+  pivot_longer(cd68_positive_cells:cd8_positive_cells, names_to = "cell_type", values_to = "count") %>%
+  mutate(proportion = count / total_cells,
+         cell_type = factor(cell_type, levels = c("cd3_positive_cells", "cd8_positive_cells",
+                                                    "cd19_positive_cells", "cd68_positive_cells"),
+                              labels = c("CD4 T cells", "CD8 T cells", "B cells", "Macrophages")))
+
+
+
+ovarian_counts = full_join(dplyr::select(patient_level_df, sample_id, stage_bin, BRCA_mutation, primary, age_at_diagnosis),
+                           ovarian_counts, by = "sample_id") %>%
+    filter(proportion < 0.75, 
+         tissue_category == "Tumor") %>%
+    mutate(stage_bin = factor(stage_bin, levels = 0:1, labels = c("Stage I/II", "Stage III/IV")),
+           BRCA_mutation = factor(BRCA_mutation, levels = 0:1, labels = c("BRCA-", "BRCA+"))) 
+```
+
+## Plots 
+
+```{r}
+# by stage
+ovarian_counts %>%
+  filter(!is.na(stage_bin)) %>%
+  ggplot(aes(proportion,cell_type, fill = cell_type)) + 
+  geom_density_ridges(rel_min_height = 0.001, alpha = 0.4) +
+  facet_wrap(~ stage_bin) +
+  theme(legend.position = "none")
+
+ovarian_counts %>%
+    filter(!is.na(stage_bin)) %>%
+  ggplot(aes(proportion,cell_type, fill = cell_type, height = stat(density))) + 
+  geom_density_ridges(stat = "binline", bins = 10, scale = 0.95, draw_baseline = FALSE) +
+    facet_wrap(~ stage_bin) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  theme(legend.position = "none")
+
+# by brca mutation
+ovarian_counts %>%
+  filter(!is.na(BRCA_mutation)) %>%
+  ggplot(aes(proportion,cell_type, fill = cell_type, height = stat(density))) + 
+  geom_density_ridges(stat = "binline", bins = 10, scale = 0.95, draw_baseline = FALSE) +
+    facet_wrap(~ BRCA_mutation) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  theme(legend.position = "none")
+
+
+```
+
+
+## Proportions
+
+Calculate raw proportions across cell types:
+
+```{r}
+summary_stats = ovarian_counts %>%
+  group_by(cell_type) %>%
+  summarize(model = "naive",
+            proportion = mean(proportion),
+            lower = proportion - 1.96 * sqrt( (proportion * (1-proportion))/132),
+            upper = proportion + 1.96 * sqrt( (proportion * (1-proportion))/132)
+            ) %>%
+  ungroup() %>%
+  dplyr::select(cell_type, model, proportion, lower, upper)
+```
+
+Calculating proportions using glms:
+
+```{r}
+# define function to extract proportions and standard deviations for each cell type
+get_proportions = function(model, model_name){
+  if(model_name %in% c("ZIP","ZINB") ){
+   contrasts = rbind(c(1, 0, 0, 0, 0), c(1, 1, 0, 0, 0), c(1, 0, 1, 0, 0), c(1, 0, 0, 1, 0))
+  }else{
+    contrasts = rbind(c(1, 0, 0, 0), c(1, 1, 0, 0), c(1, 0, 1, 0), c(1, 0, 0, 1)) 
+  }
+  betas = as.numeric(contrasts %*% coef(model)) # cd4, cd8, bcell, macrophage
+  sd = sqrt(diag(contrasts %*%  vcov(model) %*% t(contrasts))) # not exponentiated
+  
+  tibble(cell_type = c("CD4 T cells", "CD8 T cells", "B cells", "Macrophages"),
+         model = model_name,
+         proportion = exp(betas),
+         lower = exp(betas - 1.96 * sd),
+         upper = exp(betas + 1.96 * sd))
+}
+
+# poisson regression
+mod_pois = glm(count ~ cell_type +offset(log(total_cells)), 
+           family = "poisson",
+           data = ovarian_counts)
+
+summary(mod_pois)
+prop_pois = get_proportions(mod_pois, "Poisson")
+
+# logistic regression
+mod_bin = glm(cbind(count, total_cells - count) ~ cell_type, 
+           family = binomial,
+           data = ovarian_counts)
+
+prop_bin = get_proportions(mod_bin, "binomial")
+
+# negative binomial regression
+mod_negbin = glm.nb(count ~ cell_type + offset(log(total_cells)), 
+                    data = ovarian_counts)
+
+prop_negbin = get_proportions(mod_negbin, "negbinomial")
+
+# zero inflated poisson?
+mod_zeroinfl <- zeroinfl(count ~ cell_type + offset(log(total_cells)) | 1,
+               dist = "poisson",
+               data = ovarian_counts)
+
+prop_zeroPois = get_proportions(mod_zeroinfl, "ZIP")
+
+#model = prop_zeroPois
+#model_name = "ZIP"
+
+# zero inflated negbin
+mod_zeroNegBin <- zeroinfl(count ~ cell_type + offset(log(total_cells)) | 1,
+               dist = "negbin",
+               data = ovarian_counts)
+
+prop_zeroNegBin = get_proportions(mod_zeroNegBin, "ZINB")
+
+## combine results
+bind_rows(summary_stats, prop_pois, prop_bin, prop_negbin,prop_zeroPois, prop_zeroNegBin) %>%
+  #filter(model != "naive") %>%
+  mutate(model = factor(model, levels = c("naive", "binomial", "Poisson", "negbinomial", "ZIP", "ZINB"))) %>%
+  ggplot(aes(cell_type, proportion, color = model, shape = model)) +
+  geom_point(position = position_dodge(width = 0.3), size = .8) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.3), width = .1) +
+  #ylim(-.1, 0.075) +
+  theme_minimal() +
+  labs(x = "")
+
+
+```
+
+
+Also plot the variability as a function of BRCA mutation
+
+
+
+```{r}
+# function to perform two-sample test of proportions
+twosamp_proportions = function(phenotype){
+  ## naive, calculate p-value and confidence interval for test of two proportion
+  df = filter(ovarian_counts, cell_type == phenotype) %>% 
+    group_by(BRCA_mutation) %>%
+    summarize(n = sum(total_cells),
+              x = sum(count)) %>%
+    ungroup() %>%
+    filter(!is.na(BRCA_mutation))
+ 
+  ts = prop.test(df$x, df$n)
+  tibble(cell_type = phenotype,
+         model = "naive",
+         BRCA = ts$estimate[2]/(1- ts$estimate[2]) / ts$estimate[1]/(1- ts$estimate[1]),
+         lower = NA, # need to replace
+         upper = NA, # need to replace
+         p = ts$p.value)
+}
+
+naive = map_dfr(as.character(unique(ovarian_counts$cell_type)), twosamp_proportions)
+
+# define function to extract proportions and standard deviations for each cell type
+get_proportions = function(model, model_name){
+  if(model_name %in% c("ZIP","ZINB") ){
+    ci = broom:::broom_confint_terms(model) %>%
+      filter(grepl("BRCA", term)) %>%
+      mutate(lower = exp(conf.low), upper = exp(conf.high),
+             term = str_remove(term, "count_"))
+    
+    df = left_join(as_tibble(summary(model)$coefficients$count, rownames = "term"),
+                  ci) %>%
+      janitor::clean_names() %>%
+      filter(grepl("BRCA", term)) %>%
+      mutate(BRCA = exp(estimate), p = pr_z,
+             cell_type = c("CD4 T cells", "CD8 T cells", "B cells", "Macrophages"),
+           model = model_name) %>%
+      dplyr::select(cell_type, model, BRCA, lower, upper, p)
+      return(df)
+  }
+  broom::tidy(model, exp = TRUE, conf.int = TRUE) %>% 
+    filter(grepl("BRCA", term)) %>%
+    mutate(cell_type = c("CD4 T cells", "CD8 T cells", "B cells", "Macrophages"),
+           model = model_name,
+           p = p.value) %>%
+    dplyr::select(cell_type, model, BRCA = estimate, lower = conf.low, upper = conf.high, p)
+}
+
+# poisson regression
+mod_pois = glm(count ~ cell_type * BRCA_mutation  + offset(log(total_cells)), 
+           family = "poisson",
+           data = ovarian_counts)
+
+prop_pois = get_proportions(mod_pois, "Poisson")
+
+# logistic regression
+mod_bin = glm(cbind(count, total_cells - count) ~ cell_type * BRCA_mutation, 
+           family = binomial,
+           data = ovarian_counts)
+
+prop_bin = get_proportions(mod_bin, "binomial")
+
+# negative binomial regression
+mod_negbin = glm.nb(count ~ cell_type * BRCA_mutation + offset(log(total_cells)), 
+                    data = ovarian_counts)
+
+prop_negbin = get_proportions(mod_negbin, "negbinomial")
+
+# zero inflated poisson?
+mod_zeroinfl <- zeroinfl(count ~ cell_type * BRCA_mutation + offset(log(total_cells)) | 1,
+               dist = "poisson",
+               data = ovarian_counts)
+
+
+prop_zeroPois = get_proportions(mod_zeroinfl, "ZIP")
+
+#model = mod_zeroinfl
+#model_name = "ZIP"
+
+# zero inflated negbin
+mod_zeroNegBin <- zeroinfl(count ~ cell_type * BRCA_mutation  + offset(log(total_cells)) | 1,
+               dist = "negbin",
+               data = ovarian_counts)
+
+prop_zeroNegBin = get_proportions(mod_zeroNegBin, "ZINB")
+
+
+
+
+
+## combine results
+# make some other more informative and prettier plots. These p-values are super significant.
+bind_rows(naive, prop_pois, prop_bin, prop_negbin,prop_zeroPois, prop_zeroNegBin) %>%
+  #filter(model != "naive") %>%
+  mutate(model = factor(model, levels = c("naive", "binomial", "Poisson", "negbinomial", "ZIP", "ZINB"))) %>%
+  ggplot(aes(model, BRCA, color = model, shape = model)) +
+  geom_point(position = position_dodge(width = 0.3), size = .8) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.3), width = .1) +
+  #ylim(-.1, 0.075) +
+  theme_minimal() +
+  facet_wrap(~cell_type) +
+  labs(x = "")
+
+```
+
+
+# Spatial analysis
