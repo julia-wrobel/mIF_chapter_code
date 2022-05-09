@@ -69,11 +69,11 @@ colData_df <- colData(spe_ovarian)
 spatialCoords_df <- spatialCoords(spe_ovarian)
 
 # clinical data
-patient_level_df <- metadata(spe_ovarian)$clinical_data %>%
+patient_level_ovarian <- metadata(spe_ovarian)$clinical_data %>%
   # create binary stage variable
   mutate(stage_bin = ifelse(stage %in% c("1", "2"), 0, 1))
 
-cell_level_df <- as.data.frame(cbind(colData_df, 
+cell_level_ovarian <- as.data.frame(cbind(colData_df, 
                                      spatialCoords_df,
                                      t(intensities_df),
                                      t(nucleus_intensities_df),
@@ -83,12 +83,46 @@ cell_level_df <- as.data.frame(cbind(colData_df,
 
 
 # data frame with clinical characteristics where each row is a different cell
-ovarian_df <- full_join(patient_level_df, cell_level_df, by = "sample_id")
+#ovarian_df <- full_join(patient_level_ovarian, cell_level_ovarian, by = "sample_id")
 
+rm(spe_ovarian, assays_slot, intensities_df, nucleus_intensities_df, membrane_intensities_df, colData_df, spatialCoords_df)
 ```
 
 
 ## Lung data
+
+```{r}
+spe_lung <- HumanLungCancerV3()
+
+## Assays slots
+assays_slot <- assays(spe_lung)
+intensities_df <- assays_slot$intensities
+rownames(intensities_df) <- paste0("total_", rownames(intensities_df))
+nucleus_intensities_df<- assays_slot$nucleus_intensities
+rownames(nucleus_intensities_df) <- paste0("nucleus_", rownames(nucleus_intensities_df))
+membrane_intensities_df<- assays_slot$membrane_intensities
+rownames(membrane_intensities_df) <- paste0("membrane_", rownames(membrane_intensities_df))
+
+# colData and spatialData
+colData_df <- colData(spe_lung)
+spatialCoords_df <- spatialCoords(spe_lung)
+
+# clinical data
+patient_level_lung <- metadata(spe_lung)$clinical_data 
+
+cell_level_lung <- as.data.frame(cbind(colData_df, 
+                                     spatialCoords_df,
+                                     t(intensities_df),
+                                     t(nucleus_intensities_df),
+                                     t(membrane_intensities_df))
+                               )
+
+# data frame with clinical characteristics where each row is a different cell
+#lung_df <- full_join(patient_level_lung, cell_level_lung, by = "slide_id")
+
+rm(spe_lung, assays_slot, intensities_df, nucleus_intensities_df, membrane_intensities_df, colData_df, spatialCoords_df)
+```
+
 
 # Introduction
 # Normalization and phenotyping
@@ -100,7 +134,7 @@ Look at only tumor areas.
 
 ```{r}
 # aggregate to cell counts for each subject 
-ovarian_counts = cell_level_df %>%
+ovarian_counts = cell_level_ovarian %>%
   group_by(sample_id, tissue_category) %>%
   summarize(total_cells = n(),
             cd68_positive_cells = length(phenotype_cd68[phenotype_cd68 == "CD68+"]),
@@ -126,7 +160,8 @@ ovarian_counts = cell_level_df %>%
 
 
 
-ovarian_counts = full_join(dplyr::select(patient_level_df, sample_id, stage_bin, BRCA_mutation, primary, age_at_diagnosis),
+ovarian_counts = full_join(dplyr::select(patient_level_ovarian, sample_id, stage_bin, BRCA_mutation, 
+                                         primary, age_at_diagnosis),
                            ovarian_counts, by = "sample_id") %>%
     filter(proportion < 0.75, 
          tissue_category == "Tumor") %>%
