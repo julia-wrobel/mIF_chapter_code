@@ -24,9 +24,10 @@ library(pscl)
 
 knitr::opts_chunk$set(echo = TRUE,
   warning = FALSE,
+  message = FALSE,
   fig.width = 9,
   fig.height = 4,
-  fig.path = '../output/'
+  fig.path = './figs/'
 )
 
 theme_set(theme_bw() + theme(legend.position = "bottom"))
@@ -38,7 +39,7 @@ theme_set(theme_bw() + theme(legend.position = "bottom"))
 
 The data is publicly available on Bioconductor as the package `VectraPolarisData`. You can install it here:
 
-```{r, eval = FALSE}
+```{r, eval = FALSE, echo = TRUE, show = TRUE}
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
      install.packages("BiocManager")
 }
@@ -130,7 +131,7 @@ rm(spe_lung, assays_slot, intensities_df, nucleus_intensities_df, membrane_inten
 
 Data is currently in cell-level format (each row is a cell). To make it easier for modeling counts and proportions, going to summarize the dataset so that each row is a subject and cell types are reported as counts. 
 
-Look at only tumor areas.
+Look at only tumor areas.  Also, for "naive" do logit or square root transform, then put it in a linear model
 
 ```{r}
 # aggregate to cell counts for each subject 
@@ -169,33 +170,20 @@ ovarian_counts = full_join(dplyr::select(patient_level_ovarian, sample_id, stage
            BRCA_mutation = factor(BRCA_mutation, levels = 0:1, labels = c("BRCA-", "BRCA+"))) 
 ```
 
-## Plots 
+## Histograms of cell proportions
 
-```{r}
-# by stage
-ovarian_counts %>%
-  filter(!is.na(stage_bin)) %>%
-  ggplot(aes(proportion,cell_type, fill = cell_type)) + 
-  geom_density_ridges(rel_min_height = 0.001, alpha = 0.4) +
-  facet_wrap(~ stage_bin) +
-  theme(legend.position = "none")
-
-ovarian_counts %>%
-    filter(!is.na(stage_bin)) %>%
-  ggplot(aes(proportion,cell_type, fill = cell_type, height = stat(density))) + 
-  geom_density_ridges(stat = "binline", bins = 10, scale = 0.95, draw_baseline = FALSE) +
-    facet_wrap(~ stage_bin) +
-  geom_vline(xintercept = 0, linetype = 2) +
-  theme(legend.position = "none")
+```{r proportions_hist, fig.width = 6, fig.height = 8}
 
 # by brca mutation
 ovarian_counts %>%
   filter(!is.na(BRCA_mutation)) %>%
   ggplot(aes(proportion,cell_type, fill = cell_type, height = stat(density))) + 
-  geom_density_ridges(stat = "binline", bins = 10, scale = 0.95, draw_baseline = FALSE) +
-    facet_wrap(~ BRCA_mutation) +
+  geom_density_ridges(stat = "binline", bins = 15, scale = .95, draw_baseline = FALSE) +
+  scale_y_discrete(expand = expansion(add = c(0.05, 0.4))) +
+  facet_wrap(~ BRCA_mutation) +
   geom_vline(xintercept = 0, linetype = 2) +
-  theme(legend.position = "none")
+  theme(legend.position = "none") +
+  labs(x = "proportion of cells in tumor area", y = "cell type")
 
 
 ```
@@ -291,7 +279,6 @@ bind_rows(summary_stats, prop_pois, prop_bin, prop_negbin,prop_zeroPois, prop_ze
 
 
 Also plot the variability as a function of BRCA mutation
-
 
 
 ```{r}
