@@ -21,6 +21,12 @@ library(VectraPolarisData)
 library(ggridges)
 library(MASS)
 library(pscl)
+library(patchwork)
+library(viridis)
+
+library(data.table)
+library(Rtsne)
+library(Rphenograph)
 
 knitr::opts_chunk$set(echo = TRUE,
   warning = FALSE,
@@ -59,7 +65,6 @@ spe_ovarian <- HumanOvarianCancerVP()
 ## Assays slots
 assays_slot <- assays(spe_ovarian)
 intensities_df <- assays_slot$intensities
-rownames(intensities_df) <- paste0("total_", rownames(intensities_df))
 nucleus_intensities_df<- assays_slot$nucleus_intensities
 rownames(nucleus_intensities_df) <- paste0("nucleus_", rownames(nucleus_intensities_df))
 membrane_intensities_df<- assays_slot$membrane_intensities
@@ -79,8 +84,15 @@ cell_level_ovarian <- as.data.frame(cbind(colData_df,
                                      t(intensities_df),
                                      t(nucleus_intensities_df),
                                      t(membrane_intensities_df))
-                               )
-
+                               ) %>%
+  dplyr::rename(cd19 = cd19_opal_480,
+                cd68 = cd68_opal_520,
+                cd3 = cd3_opal_540, 
+                cd8 = cd8_opal_650,
+                ier3 = ier3_opal_620,
+                pstat3 = p_stat3_opal_570,
+                ck = ck_opal_780,
+                ki67 = ki67_opal_690)
 
 
 # data frame with clinical characteristics where each row is a different cell
@@ -98,7 +110,6 @@ spe_lung <- HumanLungCancerV3()
 ## Assays slots
 assays_slot <- assays(spe_lung)
 intensities_df <- assays_slot$intensities
-rownames(intensities_df) <- paste0("total_", rownames(intensities_df))
 nucleus_intensities_df<- assays_slot$nucleus_intensities
 rownames(nucleus_intensities_df) <- paste0("nucleus_", rownames(nucleus_intensities_df))
 membrane_intensities_df<- assays_slot$membrane_intensities
@@ -111,12 +122,20 @@ spatialCoords_df <- spatialCoords(spe_lung)
 # clinical data
 patient_level_lung <- metadata(spe_lung)$clinical_data 
 
-cell_level_lung <- as.data.frame(cbind(colData_df, 
+cell_level_lung <- as_tibble(cbind(colData_df, 
                                      spatialCoords_df,
                                      t(intensities_df),
                                      t(nucleus_intensities_df),
                                      t(membrane_intensities_df))
-                               )
+                               )   %>%
+  dplyr::rename(cd19 = cd19_opal_650,
+                cd3 = cd3_opal_520, 
+                cd14 = cd14_opal_540,
+                cd8 = cd8_opal_620,
+                hladr = hladr_opal_690,
+                ck = ck_opal_570)
+
+
 
 # data frame with clinical characteristics where each row is a different cell
 #lung_df <- full_join(patient_level_lung, cell_level_lung, by = "slide_id")
@@ -126,12 +145,270 @@ rm(spe_lung, assays_slot, intensities_df, nucleus_intensities_df, membrane_inten
 
 
 # Introduction
-# Normalization and phenotyping
+
+
+
+# Normalization
+
+As an illustrative example will use the `mxnorm` package to normalize the lung data. 
+
+## Setting up `mx_dataset` object
+
+ Use `slide_id` as slide identifier
+- Use `sample_id` as image identifier
+- Use the following marker columns:
+    - `cd19`
+    - `cd14`
+    - `cd3`
+    - `cd8`
+    - `hladr`
+    - `ck`
+    - `dapi`
+- Use `tissue_category` as a metadata column
+
+
+```{r}
+library(mxnorm)
+mx_data = mx_dataset(data = cell_level_lung,
+                     slide_id = "slide_id",
+                     image_id = "sample_id",
+                     marker_cols = c("cd19",
+                                     "cd3",
+                                     "cd14",
+                                     "cd8",
+                                     "hladr",
+                                     "ck",
+                                     "dapi"
+                                     ),
+                     metadata_cols = c("tissue_category", "phenotype_ck", "phenotype_cd8", "phenotype_cd14",
+                                       "phenotype_other", "phenotype_cd19"))
+
+
+
+summary(mx_data)
+```
+
+
+And let's look at the data object we're going to use going forward:
+
+```{r}
+knitr::kable(head(mx_data$data))  %>%
+    kableExtra::kable_styling() %>% kableExtra::scroll_box(width = "100%")
+```
+
+
+## Normalize using `mx_normalize()`
+
+Normalize using two methods: `log10`, and `mean_divide`. Then, calculate Otsu discordance metrics.
+
+
+
+```{r mxnorm, cache = TRUE}
+mx_norm = mx_normalize(mx_data,
+                       transform = "log10_mean_divide",
+                       method = "None")
+
+
+# Otsu
+mx_norm = run_otsu_discordance(mx_norm,
+                            table="both",
+                            thresold_override=NULL,
+                            plot_out = FALSE)
+
+# umap
+mx_norm = run_reduce_umap(mx_norm,
+                          table="both",
+                          marker_list = mx_data$marker_cols,
+                          downsample_pct = .1,
+                          metadata_cols = mx_data$metadata_cols)
+
+```
+
+
+Summary table that calculates the metrics from the Bioinformatics paper is printed below
+
+```{r mxnorm_stats, cache = TRUE}
+# calculate metrics for unnormalized and normalized data
+summary(mx_norm)
+```
+
+## Plotting
+
+First, density plots. Only showing density plots for unnormalized cells for two types of immune markers and 3 subjects.
+
+```{r density_mxnorm, cache = TRUE}
+set.seed(103001)
+ids = sample(unique(cell_level_lung$slide_id), 3)
+markers = c("cd19", "cd14")
+mx_df = mx_data$data %>%
+  pivot_longer(cd19:dapi, names_to = "marker", values_to = "marker_value") %>%
+  filter(slide_id %in% ids)
+  
+  
+cd14 = mx_df %>% 
+    filter(marker %in% c("cd14")) %>%
+    ggplot() +
+  geom_line(stat = "density", aes(marker_value, group = sample_id, color = slide_id), 
+            alpha=0.5, linetype = 2) +
+    geom_density(aes(marker_value, group = slide_id,
+                   color = slide_id), size = 1.25) +
+  scale_color_viridis(discrete = TRUE) +
+  facet_wrap(~marker, scales = "free", ncol = 1) +
+  theme(legend.position = "none") +
+  xlim(0, 1) +
+  labs(x = "")
+
+
+cd19 = mx_df %>%
+  filter(marker %in% c("cd19")) %>%
+  ggplot() +
+  geom_line(stat = "density", aes(marker_value, group = sample_id, color = slide_id), 
+            alpha=0.5, linetype = 2) +
+    geom_density(aes(marker_value, group = slide_id,
+                   color = slide_id), size = 1.25) +
+  scale_color_viridis(discrete = TRUE) +
+  facet_wrap(~marker, scales = "free", ncol = 1) +
+  theme(legend.position = "none") +
+  xlim(0, 0.5) +
+  labs(x = "marker value")
+
+
+```
+
+
+Discordance plots. Show for subset of markers and maybe subset of subjects.
+
+```{r discordance_mxnorm, cache = TRUE}
+set.seed(103001)
+ids = sample(unique(cell_level_lung$slide_id), 15)
+
+otsu_data = mx_norm$otsu_data %>%
+  filter(marker %in% c("cd14", "cd19", "cd8", "cd3", "dapi", "ck"),
+         slide_id %in% ids) %>%
+  mutate(slide_id = as.numeric(factor(slide_id)),
+         norm = factor(table, levels = c("raw", "normalized"))) 
+
+point_size = 2
+    
+
+mean_vals = otsu_data %>% 
+  group_by(norm, slide_id) %>% 
+  summarize(m1 = mean(discordance_score), .groups = "drop")
+        
+
+disc = otsu_data %>%
+  ggplot() + 
+  geom_point(aes(discordance_score, factor(slide_id), color = marker), size = point_size) +
+  facet_wrap(~ norm) +
+  geom_point(data = mean_vals, aes(m1, slide_id), color = "black", fill = "white", 
+             shape = 23, size = point_size) +
+  labs(x = "discordance score", y = "slide id") +
+  theme(legend.position = c(.9, .7))
+
+```
+
+
+Putting the plots together
+
+```{r normalization_plot, fig.height= 8}
+(cd14 / cd19) / disc + plot_layout(heights = c(1, 1, 2.5))
+```
+
+
+
+```{r}
+rm(mx_data, mean_vals, otsu_data, discordance_score, ids, markers, point_size, mx_df)
+```
+
+
+# Phenotyping
+
+Add in phenograph plots. Clustering using marker values for a single subject. First using unnormalized marker values.
+
+```{r phenograph_unnorm, cache = TRUE}
+unnorm_df = mx_norm$data %>%
+  filter(slide_id == "#01 0-889-121") %>%
+  dplyr::select(cd19, cd3, cd14, cd8, ck, contains("phenotype")) %>%
+  mutate(phenotype = case_when(
+    phenotype_cd14 == "CD14+" ~ "CD14+",
+    phenotype_cd19 == "CD19+" ~ "CD19+",
+    phenotype_cd8 == "CD8+" ~ "CD8+",
+    phenotype_ck == "CK+" ~ "CK+",
+    TRUE ~ "other"
+  ))
+  
+
+unnorm_df = na.omit(unnorm_df)
+unnorm_df_mat = as.matrix(unnorm_df[, 1:5])
+
+
+# tsne 
+tsne_results = Rtsne(unnorm_df_mat, dims = 2,check_duplicates = FALSE)
+unnorm_df$tsne1 = tsne_results$Y[,1]  
+unnorm_df$tsne2 = tsne_results$Y[,2]
+
+
+# phenograph
+phen_results = Rphenograph(unnorm_df_mat, k = 100)
+unnorm_df$cluster <- factor(membership(phen_results[[2]]))
+
+```
+
+Now using normalized marker values
+
+```{r phenograph_norm, cache = TRUE}
+norm_df = mx_norm$norm_data %>%
+  filter(slide_id == "#01 0-889-121") %>%
+  dplyr::select(cd19, cd3, cd14, cd8, ck, contains("phenotype"))
+
+norm_df = na.omit(norm_df)
+norm_df_mat = as.matrix(norm_df[, 1:5])
+
+
+# tsne 
+#tsne_results = Rtsne(norm_df_mat, dims = 2,check_duplicates = FALSE)
+norm_df$tsne1 = tsne_results$Y[,1]  
+norm_df$tsne2 = tsne_results$Y[,2]
+
+
+# phenograph
+phen_results = Rphenograph(norm_df_mat, k = 100)
+norm_df$cluster <- factor(membership(phen_results[[2]]))
+
+```
+
+
+Plotted results for unnormalized phenograph labels, normalized phenograph labels, and Inform labels. Results are plotted for single subject with  `r length(unique(filter(mx_norm$norm_data, slide_id == "#01 0-889-121")$sample_id))`` ROIs.
+
+```{r phenograph_plot, fig.height = 12}
+p1 = unnorm_df %>%
+  ggplot(aes(tsne1, tsne2, color = phenotype)) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  labs(x = "TSNE 1", y = "TSNE 2", title = "Inform") +
+  theme(legend.title=element_blank(), legend.position = "right") 
+
+p2 = unnorm_df %>%
+  ggplot(aes(tsne1, tsne2, color = cluster)) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  labs(x = "TSNE 1", y = "", title = "Phenograph, unnormalized") +
+  guides(fill=guide_legend(title="New Legend Title")) +
+  theme(legend.position = "right")
+
+p3 = norm_df %>%
+  ggplot(aes(tsne1, tsne2, color = cluster)) +
+  geom_point(alpha = 0.5, size = 0.75) +
+  labs(x = "TSNE 1", y = "", title = "Phenograph, normalized") +
+  theme(legend.position = "right")
+
+p1 / p2 / p3
+```
+
+
 # Compositional analysis
 
 Data is currently in cell-level format (each row is a cell). To make it easier for modeling counts and proportions, going to summarize the dataset so that each row is a subject and cell types are reported as counts. 
 
-Look at only tumor areas.  Also, for "naive" do logit or square root transform, then put it in a linear model
+Look at only tumor areas.  
 
 ```{r}
 # aggregate to cell counts for each subject 
@@ -172,7 +449,7 @@ ovarian_counts = full_join(dplyr::select(patient_level_ovarian, sample_id, stage
 
 ## Histograms of cell proportions
 
-```{r proportions_hist, fig.width = 6, fig.height = 8}
+```{r proportions_hist}
 
 # by brca mutation
 ovarian_counts %>%
@@ -205,104 +482,11 @@ summary_stats = ovarian_counts %>%
   dplyr::select(cell_type, model, proportion, lower, upper)
 ```
 
-Calculating proportions using glms:
 
-```{r}
-# define function to extract proportions and standard deviations for each cell type
-get_proportions = function(model, model_name){
-  if(model_name %in% c("ZIP","ZINB") ){
-   contrasts = rbind(c(1, 0, 0, 0, 0), c(1, 1, 0, 0, 0), c(1, 0, 1, 0, 0), c(1, 0, 0, 1, 0))
-  }else{
-    contrasts = rbind(c(1, 0, 0, 0), c(1, 1, 0, 0), c(1, 0, 1, 0), c(1, 0, 0, 1)) 
-  }
-  betas = as.numeric(contrasts %*% coef(model)) # cd4, cd8, bcell, macrophage
-  sd = sqrt(diag(contrasts %*%  vcov(model) %*% t(contrasts))) # not exponentiated
-  
-  tibble(cell_type = c("CD4 T cells", "CD8 T cells", "B cells", "Macrophages"),
-         model = model_name,
-         proportion = exp(betas),
-         lower = exp(betas - 1.96 * sd),
-         upper = exp(betas + 1.96 * sd))
-}
-
-# poisson regression
-mod_pois = glm(count ~ cell_type +offset(log(total_cells)), 
-           family = "poisson",
-           data = ovarian_counts)
-
-summary(mod_pois)
-prop_pois = get_proportions(mod_pois, "Poisson")
-
-# logistic regression
-mod_bin = glm(cbind(count, total_cells - count) ~ cell_type, 
-           family = binomial,
-           data = ovarian_counts)
-
-prop_bin = get_proportions(mod_bin, "binomial")
-
-# negative binomial regression
-mod_negbin = glm.nb(count ~ cell_type + offset(log(total_cells)), 
-                    data = ovarian_counts)
-
-prop_negbin = get_proportions(mod_negbin, "negbinomial")
-
-# zero inflated poisson?
-mod_zeroinfl <- zeroinfl(count ~ cell_type + offset(log(total_cells)) | 1,
-               dist = "poisson",
-               data = ovarian_counts)
-
-prop_zeroPois = get_proportions(mod_zeroinfl, "ZIP")
-
-#model = prop_zeroPois
-#model_name = "ZIP"
-
-# zero inflated negbin
-mod_zeroNegBin <- zeroinfl(count ~ cell_type + offset(log(total_cells)) | 1,
-               dist = "negbin",
-               data = ovarian_counts)
-
-prop_zeroNegBin = get_proportions(mod_zeroNegBin, "ZINB")
-
-## combine results
-bind_rows(summary_stats, prop_pois, prop_bin, prop_negbin,prop_zeroPois, prop_zeroNegBin) %>%
-  #filter(model != "naive") %>%
-  mutate(model = factor(model, levels = c("naive", "binomial", "Poisson", "negbinomial", "ZIP", "ZINB"))) %>%
-  ggplot(aes(cell_type, proportion, color = model, shape = model)) +
-  geom_point(position = position_dodge(width = 0.3), size = .8) +
-  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.3), width = .1) +
-  #ylim(-.1, 0.075) +
-  theme_minimal() +
-  labs(x = "")
+Model the proportions as a function of BRCA mutation.
 
 
-```
-
-
-Also plot the variability as a function of BRCA mutation
-
-
-```{r}
-# function to perform two-sample test of proportions
-twosamp_proportions = function(phenotype){
-  ## naive, calculate p-value and confidence interval for test of two proportion
-  df = filter(ovarian_counts, cell_type == phenotype) %>% 
-    group_by(BRCA_mutation) %>%
-    summarize(n = sum(total_cells),
-              x = sum(count)) %>%
-    ungroup() %>%
-    filter(!is.na(BRCA_mutation))
- 
-  ts = prop.test(df$x, df$n)
-  tibble(cell_type = phenotype,
-         model = "naive",
-         BRCA = ts$estimate[2]/(1- ts$estimate[2]) / ts$estimate[1]/(1- ts$estimate[1]),
-         lower = NA, # need to replace
-         upper = NA, # need to replace
-         p = ts$p.value)
-}
-
-naive = map_dfr(as.character(unique(ovarian_counts$cell_type)), twosamp_proportions)
-
+```{r, eval = FALSE}
 # define function to extract proportions and standard deviations for each cell type
 get_proportions = function(model, model_name){
   if(model_name %in% c("ZIP","ZINB") ){
@@ -328,6 +512,9 @@ get_proportions = function(model, model_name){
            p = p.value) %>%
     dplyr::select(cell_type, model, BRCA = estimate, lower = conf.low, upper = conf.high, p)
 }
+
+# naive model (square root transform)
+
 
 # poisson regression
 mod_pois = glm(count ~ cell_type * BRCA_mutation  + offset(log(total_cells)), 
@@ -388,3 +575,5 @@ bind_rows(naive, prop_pois, prop_bin, prop_negbin,prop_zeroPois, prop_zeroNegBin
 
 
 # Spatial analysis
+
+Use ovarian data, calculate K function. Show picture with high clustering, low clustering, poor quality. Use radius from Ben's paper. Look at bivariate K as well and show association with survival.
