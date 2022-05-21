@@ -34,3 +34,11 @@ data.table
 Rtsne
 igraph
 Rphenograph
+spatstat.data
+spatstat.geom
+spatstat.random
+nlme
+rpart
+spatstat.core
+spatstat.linnet
+spatstat
