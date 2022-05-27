@@ -3,3 +3,7 @@
 *.Rproj
 *figures.Rmd
 .Rproj.user
+*Rda*
+*rdb
+*rdx
+*cache*

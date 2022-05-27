@@ -315,10 +315,13 @@ rm(mx_data, mean_vals, otsu_data, discordance_score, ids, markers, point_size, m
 
 # Phenotyping
 
-Add in phenograph plots. Clustering using marker values for a single subject. First using unnormalized marker values.
+Add in phenograph plots. Clustering using normalized marker values for a single subject. 
 
-```{r phenograph_unnorm, cache = TRUE}
-unnorm_df = mx_norm$data %>%
+
+Now using normalized marker values
+
+```{r phenograph_norm, cache = TRUE}
+norm_df = mx_norm$norm_data %>%
   filter(slide_id == "#01 0-889-121") %>%
   dplyr::select(cd19, cd3, cd14, cd8, ck, contains("phenotype")) %>%
   mutate(phenotype = case_when(
@@ -330,36 +333,13 @@ unnorm_df = mx_norm$data %>%
   ))
   
 
-unnorm_df = na.omit(unnorm_df)
-unnorm_df_mat = as.matrix(unnorm_df[, 1:5])
-
-
-# tsne 
-set.seed(23423)
-tsne_results = Rtsne(unnorm_df_mat, dims = 2,check_duplicates = FALSE)
-unnorm_df$tsne1 = tsne_results$Y[,1]  
-unnorm_df$tsne2 = tsne_results$Y[,2]
-
-
-# phenograph
-phen_results = Rphenograph(unnorm_df_mat, k = 100)
-unnorm_df$phenograph_cluster <- factor(membership(phen_results[[2]]))
-
-```
-
-Now using normalized marker values
-
-```{r phenograph_norm, cache = TRUE}
-norm_df = mx_norm$norm_data %>%
-  filter(slide_id == "#01 0-889-121") %>%
-  dplyr::select(cd19, cd3, cd14, cd8, ck, contains("phenotype"))
-
 norm_df = na.omit(norm_df)
 norm_df_mat = as.matrix(norm_df[, 1:5])
 
 
 # tsne 
-#tsne_results = Rtsne(norm_df_mat, dims = 2,check_duplicates = FALSE)
+set.seed(234232)
+tsne_results = Rtsne(norm_df_mat, dims = 2,check_duplicates = FALSE)
 norm_df$tsne1 = tsne_results$Y[,1]  
 norm_df$tsne2 = tsne_results$Y[,2]
 
@@ -370,30 +350,25 @@ norm_df$phenograph_cluster <- factor(membership(phen_results[[2]]))
 
 ```
 
-Number of clusters unnormalized is `r length(unique(unnorm_df$phenograph_cluster))`. Number of clusters normalized is `r length(unique(norm_df$phenograph_cluster))`
+ Number of clusters normalize is `r length(unique(norm_df$phenograph_cluster))`
 
 Plotted results for unnormalized phenograph labels, normalized phenograph labels, and Inform labels.
 
-```{r}
-p1 = unnorm_df %>%
+```{r phenograph_plot, fig.width = 10}
+p1 = norm_df %>%
   ggplot(aes(tsne1, tsne2, color = phenotype)) +
   geom_point(alpha = 0.5, size = 0.75) +
   labs(x = "TSNE 1", y = "TSNE 2", title = "Inform") +
-  theme(legend.position = c(.9, .9))
+  theme(legend.position = c(.1, .25),
+        legend.title = element_blank())
 
-p2 = unnorm_df %>%
+p2 = norm_df %>%
   ggplot(aes(tsne1, tsne2, color = phenograph_cluster)) +
   geom_point(alpha = 0.5, size = 0.75) +
-  labs(x = "TSNE 1", y = "", title = "Phenograph, unnormalized") +
+  labs(x = "TSNE 1", y = "", title = "Phenograph") +
   theme(legend.position = "none")
 
-p3 = norm_df %>%
-  ggplot(aes(tsne1, tsne2, color = phenograph_cluster)) +
-  geom_point(alpha = 0.5, size = 0.75) +
-  labs(x = "TSNE 1", y = "", title = "Phenograph, normalized") +
-  theme(legend.position = "none")
-
-p1 + p2 + p3
+p1 + p2 
 ```
 
 
@@ -618,9 +593,6 @@ Calculate Ripley's K for B cells, then B-cells and Macrophages.  What should you
 * Analysis performed using spatstat
 * Analyze with survival outcome and make K-M curve
 
-
-
-
 * Need to calculate K for each subject separately. Choosing an arbitrary threshold for `r`. Looking at K-function for all immune cells in the tumor area.
 
 ```{r}
@@ -647,59 +619,61 @@ k_df = cell_level_ovarian %>%
 
 ```
 
-Calculated Ripley's K for immune cells. 
+Calculated Ripley's K for immune cells. Pick high and low K subject, plot
 
 
-```{r}
-k_df %>%
-  ggplot(aes(k)) +
-  geom_histogram()
+```{r k_plots, cache = TRUE, fig.height = 6, fig.width = 8}
+
+plot_k = function(id, title = ""){
+  df = cell_level_ovarian %>%
+  filter(sample_id == id, tissue_category != "Glass") %>%
+    mutate(immune = ifelse(phenotype_cd19 == "CD19+" | phenotype_cd8 == "CD8+" |
+              phenotype_cd3 == "CD3+" | phenotype_cd68 == "CD68+", "immune", "other"))
+  
+  ppp_obj = ppp(filter(df, immune == "immune")$cell_x_position, 
+              filter(df, immune == "immune")$cell_y_position,
+                 range(filter(df, immune == "immune")$cell_x_position),
+                 range(filter(df, immune == "immune")$cell_y_position))
+  
+  p1 = df %>%
+    ggplot(aes(cell_x_position, cell_y_position)) +
+    geom_point(aes(shape = tissue_category), 
+               size = 0.25, alpha = .8, color = "gray") +
+    geom_point(data = filter(df, immune == "immune"), 
+               size = 0.5, color = "darkred",
+               shape = "+") +
+    labs(x = "x position", y = "y position", title = title) +
+    theme(axis.text = element_blank(), legend.position = "none")
+  
+  k_obj = Kest(ppp_obj, correction = "Ripley")
+  p2 = tibble(r = k_obj$r,
+              K = k_obj$iso,
+              CSR = k_obj$theo) %>%
+    pivot_longer(K:CSR, names_to = "K", values_to = "value") %>%
+    mutate(K = factor(K, levels = c("K", "CSR")),
+           color = ifelse(K == "K", "black", "darkred")) %>%
+    ggplot(aes(r, value, group = K, linetype = K, color = K)) +
+    geom_line() +
+    scale_colour_manual(name = "K",values = c("black", "blue")) +
+    labs(y = "K(r)") +
+    theme(legend.position = c(.2,.8),
+          legend.title=element_blank())
+
+  list(p1, p2)
+  
+}
+
+high_k = "030120 P9HuP6 TMA 1-B_Core[1,7,E]_[14474,48365].im3"
+low_k = "030120 P9HuP6 TMA 1-A_Core[1,6,C]_[10353,49826].im3"
+patchy_k = "030120 P9HuP6 TMA 1-A_Core[1,1,C]_[10162,38841].im3"
+
+high = plot_k(high_k, "High K")
+low = plot_k(low_k, "Low K")
+patchy = plot_k(patchy_k, "Patchy TMA")
+
+
+(high[[1]] + low[[1]] + patchy[[1]]) / (high[[2]] + low[[2]] + patchy[[2]])
+
 ```
 
-
-Pick high and low K subject, plot
-
-
-```{r}
-
-k_df %>%
-  #filter(k != 0) %>%
-  arrange(-k)
-
-low_k = "030120 P9HuP6 TMA 1-B_Core[1,8,C]_[10220,50714].im3"
-high_k = "030120 P9HuP6 TMA 1-B_Core[1,5,G]_[18855,43857].im3"
-
-
-# also color by immune cells
-# maybe include all cells in plot though?
-cell_level_ovarian %>%
-     filter(tissue_category == "Tumor",
-            phenotype_cd19 == "CD19+" | phenotype_cd8 == "CD8+" |
-              phenotype_cd3 == "CD3+" | phenotype_cd68 == "CD68+",
-            sample_id == low_k)  %>%
-  ggplot(aes(cell_x_position, cell_y_position)) +
-  geom_point()
-
-
-# possible tearing
-high_k = "030120 P9HuP6 TMA 1-B_Core[1,5,G]_[18855,43857].im3"
-cell_level_ovarian %>%
-     filter(tissue_category == "Tumor",
-            phenotype_cd19 == "CD19+" | phenotype_cd8 == "CD8+" |
-              phenotype_cd3 == "CD3+" | phenotype_cd68 == "CD68+",
-            sample_id == high_k)  %>%
-  ggplot(aes(cell_x_position, cell_y_position)) +
-  geom_point()
-
-
-high_k = "030120 P9HuP6 TMA 1-A_Core[1,2,E]_[14671,40936].im3"
-cell_level_ovarian %>%
-     filter(tissue_category == "Tumor",
-            phenotype_cd19 == "CD19+" | phenotype_cd8 == "CD8+" |
-              phenotype_cd3 == "CD3+" | phenotype_cd68 == "CD68+",
-            sample_id == high_k)  %>%
-  ggplot(aes(cell_x_position, cell_y_position)) +
-  geom_point()
-
-```
 
